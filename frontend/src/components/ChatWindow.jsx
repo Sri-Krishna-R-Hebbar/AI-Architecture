@@ -2,14 +2,14 @@ import React, { useRef, useEffect, useState } from "react";
 import DiagramPreview from "./DiagramPreview";
 import SvgModal from "./SvgModal";
 
-export default function ChatWindow({ chat, onSend, onExport, onUpdateChat }) {
+export default function ChatWindow({ chat, messages, onSend, onExport }) {
   const [input, setInput] = useState("");
   const [modalSvg, setModalSvg] = useState(null);
   const messagesEndRef = useRef();
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [chat.messages.length]);
+  }, [messages.length]);
 
   const handleSend = async () => {
     if (!input.trim()) return;
@@ -17,7 +17,7 @@ export default function ChatWindow({ chat, onSend, onExport, onUpdateChat }) {
     setInput("");
   };
 
-  const lastAssistant = [...chat.messages].reverse().find((m) => m.role === "assistant" && m.svg);
+  const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant" && m.svg);
   const lastSvg = lastAssistant?.svg;
 
   return (
@@ -33,15 +33,6 @@ export default function ChatWindow({ chat, onSend, onExport, onUpdateChat }) {
         </div>
 
         <div className="chat-controls">
-          <button
-            className="btn"
-            onClick={() => {
-              const t = prompt("Edit chat title (local only)", chat.title);
-              if (t !== null) onUpdateChat({ title: t });
-            }}
-          >
-            Edit Title
-          </button>
           <button className="btn primary" onClick={onExport}>
             Export PDF
           </button>
@@ -49,15 +40,15 @@ export default function ChatWindow({ chat, onSend, onExport, onUpdateChat }) {
       </header>
 
       <div className="messages-area">
-        {chat.messages.map((m, idx) => (
+        {messages.map((m, idx) => (
           <div key={idx} className={`message ${m.role}`}>
             <div className="message-content">
               {m.role === "user" ? (
-                <div className="user-text">{m.text}</div>
+                <div className="user-text">{m.content}</div>
               ) : (
                 <>
                   <div className="assistant-text">
-                    <pre className="mermaid-code">{m.mermaid || m.text}</pre>
+                    <pre className="mermaid-code">{m.mermaid || m.content}</pre>
                   </div>
                   {m.svg ? (
                     <div
@@ -70,14 +61,21 @@ export default function ChatWindow({ chat, onSend, onExport, onUpdateChat }) {
                 </>
               )}
             </div>
-            <div className="message-meta">{new Date(m.timestamp).toLocaleString()}</div>
+            <div className="message-meta">
+              {new Date(m.created_at).toLocaleString()}
+            </div>
           </div>
         ))}
         <div ref={messagesEndRef} />
       </div>
 
       <div className="input-area">
-        <textarea value={input} onChange={(e) => setInput(e.target.value)} placeholder="Describe the architecture or request a change..." rows={3} />
+        <textarea
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="Describe the architecture or request a change..."
+          rows={3}
+        />
         <div className="input-actions">
           <button className="btn" onClick={() => setInput("")}>
             Clear

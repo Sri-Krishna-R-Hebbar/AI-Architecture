@@ -1,208 +1,277 @@
-import { useEffect, useState, useRef } from "react";
-import api from "../services/api";
+import { useState, useEffect } from "react";
+import axios from "axios";
+import { supabase } from "../lib/supabaseClient";
 
-/**
- * Chat schema:
- * {
- *   id,
- *   title, // local title (not used for PDF title anymore)
- *   generatedTitle,      // last generated title from OpenAI
- *   generatedProblem,    // last generated problem from OpenAI
- *   generatedTechStack,  // last generated tech stack from OpenAI (array)
- *   messages: [{ role, text, mermaid?, svg?, timestamp }]
- * }
- */
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:5000";
 
-const STORAGE_KEY = "ai_architect_chats_v2";
-
-function makeId() {
-  return Math.random().toString(36).slice(2, 9);
+function nowIso() {
+  return new Date().toISOString();
 }
 
 export default function useChatManager() {
-  const [chats, setChats] = useState([]);
+  const [chats, setChats] = useState([]); // basic chat list (no messages)
   const [activeChatId, setActiveChatId] = useState(null);
-  const loadingRef = useRef(false);
+  const [messages, setMessages] = useState([]); // messages for active chat
+  const [loadingChats, setLoadingChats] = useState(true);
+  const [loadingMessages, setLoadingMessages] = useState(false);
 
+  // Load chats on mount
   useEffect(() => {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      try {
-        const parsed = JSON.parse(raw);
-        setChats(parsed);
-        if (parsed.length) setActiveChatId(parsed[0].id);
-      } catch {}
-    }
+    loadChats();
   }, []);
 
+  // Load chat list
+  async function loadChats() {
+    setLoadingChats(true);
+    const { data, error } = await supabase
+      .from("chats")
+      .select("id, title, generated_title, created_at")
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("Failed to load chats:", error);
+      setChats([]);
+    } else {
+      setChats(data || []);
+      // if none selected, set first chat as active
+      if (data && data.length && !activeChatId) {
+        setActiveChatId((prev) => prev || data[0].id);
+      }
+    }
+    setLoadingChats(false);
+  }
+
+  // Load messages for active chat whenever activeChatId changes
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(chats));
-  }, [chats]);
+    if (!activeChatId) {
+      setMessages([]);
+      return;
+    }
+    fetchMessages(activeChatId);
+  }, [activeChatId]);
 
-  const createChat = (title = null) => {
-    const id = makeId();
-    const newChat = {
-      id,
-      title: title || `Untitled ${chats.length + 1}`,
-      generatedTitle: null,
-      generatedProblem: null,
-      generatedTechStack: [],
-      messages: [],
-    };
-    setChats((s) => [newChat, ...s]);
+  async function fetchMessages(chatId) {
+    setLoadingMessages(true);
+    const { data, error } = await supabase
+      .from("messages")
+      .select("id, role, content, mermaid, svg, created_at")
+      .eq("chat_id", chatId)
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      console.error("Failed to fetch messages:", error);
+      setMessages([]);
+    } else {
+      setMessages(data || []);
+    }
+    setLoadingMessages(false);
+  }
+
+  // Create chat (use passed title if present)
+  async function createChat(title) {
+    const chatTitle = title && title.trim() ? title.trim() : "New Chat";
+    const { data, error } = await supabase
+      .from("chats")
+      .insert([{ title: chatTitle }])
+      .select()
+      .single();
+
+    if (error) {
+      console.error("Failed to create chat:", error);
+      return null;
+    }
+
+    // Update local state & set active
+    setChats((prev) => [data, ...prev]);
+    setActiveChatId(data.id);
+    // ensure messages cleared
+    setMessages([]);
+    return data;
+  }
+
+  // Select chat (UI click)
+  async function selectChat(id) {
     setActiveChatId(id);
-  };
+    // fetchMessages will run via effect
+  }
 
-  const selectChat = (id) => setActiveChatId(id);
+  // Rename chat
+  async function renameChat(id, newTitle) {
+    const cleaned = newTitle && newTitle.trim() ? newTitle.trim() : "Untitled";
+    const { error } = await supabase.from("chats").update({ title: cleaned }).eq("id", id);
+    if (error) {
+      console.error("Rename chat error:", error);
+      return;
+    }
+    setChats((prev) => prev.map((c) => (c.id === id ? { ...c, title: cleaned } : c)));
+  }
 
-  const renameChat = (id, newTitle) =>
-    setChats((s) => s.map((c) => (c.id === id ? { ...c, title: newTitle } : c)));
+  // Delete chat (cascade will remove messages)
+  async function deleteChat(id) {
+    const { error } = await supabase.from("chats").delete().eq("id", id);
+    if (error) {
+      console.error("Delete chat error:", error);
+      return;
+    }
+    setChats((prev) => prev.filter((c) => c.id !== id));
+    if (activeChatId === id) {
+      setActiveChatId(null);
+      setMessages([]);
+    }
+  }
 
-  const deleteChat = (id) => {
-    setChats((s) => s.filter((c) => c.id !== id));
-    setActiveChatId((prev) => (prev === id ? (chats[0] ? chats[0].id : null) : prev));
-  };
+  // Add message row to messages table
+  async function addMessageRow(chatId, role, content = null, mermaid = null, svg = null) {
+    const payload = {
+      chat_id: chatId,
+      role,
+      content,
+      mermaid,
+      svg,
+    };
 
-  const updateChat = (id, partial) =>
-    setChats((s) => s.map((c) => (c.id === id ? { ...c, ...partial } : c)));
+    const { data, error } = await supabase.from("messages").insert([payload]).select().single();
+    if (error) {
+      console.error("addMessageRow error:", error);
+      return null;
+    }
 
-  const appendMessage = (id, message) => {
-    setChats((s) => s.map((c) => (c.id === id ? { ...c, messages: [...c.messages, message] } : c)));
-  };
+    // update local messages if this chat is active
+    if (chatId === activeChatId) {
+      setMessages((prev) => [...prev, data]);
+    }
 
-  const activeChat = chats.find((c) => c.id === activeChatId) || null;
+    return data;
+  }
 
-  // Build a conversation string that includes all user messages and latest assistant mermaid code
-  function buildConversationTextForChat(chat, latestUserText) {
-    // include chronology: previous user messages -> assistant mermaid code (labelled) -> latest user text
+  // Build conversation string for AI from messages + new user message
+  function buildConversationText(chatMessages, latestUserText) {
     const lines = [];
 
-    // include chat context: existing generated problem if any
-    if (chat.generatedTitle) {
-      lines.push(`Existing Title: ${chat.generatedTitle}`);
-    }
-    if (chat.generatedProblem) {
-      lines.push(`Existing Problem: ${chat.generatedProblem}`);
-    }
-
-    // include prior messages
-    for (const m of chat.messages) {
-      if (m.role === "user") {
-        lines.push(`User: ${m.text}`);
-      } else if (m.role === "assistant") {
-        // include the last mermaid code block the assistant generated (if exists)
+    // include previous assistant mermaid blocks (so AI can edit)
+    for (const m of chatMessages) {
+      if (m.role === "user") lines.push(`User: ${m.content}`);
+      else if (m.role === "assistant") {
         if (m.mermaid) {
-          lines.push(`Assistant (previous_mermaid):\n${m.mermaid}`);
+          lines.push(`Assistant previous_mermaid:\n${m.mermaid}`);
+        } else if (m.content) {
+          lines.push(`Assistant: ${m.content}`);
         }
       }
     }
 
-    // finally include the new user message asking for changes or fresh request
     lines.push(`User: ${latestUserText}`);
-
     return lines.join("\n\n");
   }
 
-  // sendMessage:
-  const sendMessage = async (id, text) => {
-    if (!id || !text) return;
-    if (loadingRef.current) return;
-    loadingRef.current = true;
+  // Send message: saves user message, calls backend, stores assistant result
+  async function sendMessage(chatId, userText) {
+    if (!chatId) return alert("No active chat selected.");
+    // 1) save user message
+    await addMessageRow(chatId, "user", userText, null, null);
 
-    const userMsg = { role: "user", text, timestamp: Date.now() };
-    appendMessage(id, userMsg);
+    // 2) fetch the current messages for constructing conversation
+    const { data: existingMessages, error: fetchErr } = await supabase
+      .from("messages")
+      .select("role, content, mermaid, svg, created_at")
+      .eq("chat_id", chatId)
+      .order("created_at", { ascending: true });
 
-    const chat = chats.find((c) => c.id === id);
-    if (!chat) {
-      loadingRef.current = false;
-      return;
-    }
+    if (fetchErr) console.error("fetch messages before send:", fetchErr);
 
-    // build conversation including previous assistant mermaid code
-    const conversation = buildConversationTextForChat(chat, text);
+    // 3) build conversation for backend
+    const conversation = buildConversationText(existingMessages || [], userText);
 
+    // 4) call backend AI endpoint (uses conversation => returns JSON: title, problem, tech_stack, mermaid)
     try {
-      // Call backend /api/ai/generate-mermaid with conversation
-      const genResp = await api.post("/api/ai/generate-mermaid", { conversation });
-      const payload = genResp.data;
+      const aiResp = await axios.post(`${BACKEND_URL}/api/ai/generate-mermaid`, {
+        conversation,
+      });
 
-      // expected payload: { title, problem, tech_stack, mermaid }
-      const { title, problem, tech_stack, mermaid } = payload;
+      const { title, problem, tech_stack, mermaid } = aiResp.data;
 
-      // render mermaid to svg
-      const renderResp = await api.post("/api/mermaid/render", { mermaidCode: mermaid });
+      // render mermaid -> svg by calling render endpoint
+      const renderResp = await axios.post(`${BACKEND_URL}/api/mermaid/render`, { mermaidCode: mermaid });
       const svg = renderResp.data.svg;
 
-      // assistant message to append
-      const assistantMsg = {
-        role: "assistant",
-        text: mermaid,
-        mermaid,
-        svg,
-        timestamp: Date.now(),
-      };
+      // 5) store assistant message row
+      const assistantRow = await addMessageRow(chatId, "assistant", problem || title, mermaid, svg);
 
-      // update chat fields: store generated title/problem/tech
-      setChats((s) =>
-        s.map((c) =>
-          c.id === id
-            ? {
-                ...c,
-                generatedTitle: title,
-                generatedProblem: problem,
-                generatedTechStack: Array.isArray(tech_stack) ? tech_stack : [],
-                messages: [...c.messages, assistantMsg],
-              }
-            : c
-        )
-      );
+      // 6) update chat metadata (generated_title, generated_problem, generated_tech_stack)
+      const { error: updateErr } = await supabase.from("chats").update({
+        generated_title: title,
+        generated_problem: problem,
+        generated_tech_stack: Array.isArray(tech_stack) ? tech_stack : (tech_stack ? [tech_stack] : []),
+      }).eq("id", chatId);
+
+      if (updateErr) console.error("Failed updating chat meta:", updateErr);
+
+      // refresh chat list to show new generated_title
+      await loadChats();
+
+      return assistantRow;
     } catch (err) {
-      console.error("sendMessage error", err);
-      appendMessage(id, { role: "assistant", text: "Failed to generate diagram. See console.", timestamp: Date.now() });
-    } finally {
-      loadingRef.current = false;
+      console.error("sendMessage AI error:", err);
+      return null;
     }
-  };
+  }
 
-  // exportPdf uses generatedTitle/generatedProblem/generatedTechStack and latest svg
-  const exportPdf = async (id) => {
-    const chat = chats.find((c) => c.id === id);
-    if (!chat) return alert("No chat found.");
+  // Export PDF: use stored generated values plus last assistant svg
+  async function exportPdf(chatId) {
+    // get chat meta
+    const { data: chatRows, error: chatErr } = await supabase.from("chats").select("*").eq("id", chatId).single();
+    if (chatErr) {
+      console.error("exportPdf: failed to fetch chat", chatErr);
+      return;
+    }
+    // get last assistant svg
+    const { data: msgs, error: msgErr } = await supabase
+      .from("messages")
+      .select("svg, created_at")
+      .eq("chat_id", chatId)
+      .order("created_at", { ascending: true });
 
-    const title = chat.generatedTitle || chat.title || "Architecture Diagram";
-    const problem = chat.generatedProblem || chat.messages.find((m) => m.role === "user")?.text || "";
-    const tech_stack = chat.generatedTechStack || [];
+    if (msgErr) console.error("exportPdf messages fetch err:", msgErr);
 
-    const latestAssistant = [...chat.messages].reverse().find((m) => m.role === "assistant" && m.svg);
-    const svg = latestAssistant?.svg;
-    if (!svg) return alert("No diagram available to export. Generate one first.");
+    const lastSvgObj = (msgs || []).reverse().find((m) => m.svg);
+    if (!lastSvgObj) return alert("No SVG found to export.");
+
+    const payload = {
+      title: chatRows.generated_title || chatRows.title || "Architecture Diagram",
+      problem: chatRows.generated_problem || chatRows.title || "",
+      tech_stack: chatRows.generated_tech_stack || [],
+      svg: lastSvgObj.svg,
+    };
 
     try {
-      const resp = await api.post("/api/pdf/export", { title, problem, svg, tech_stack }, { responseType: "blob" });
+      const resp = await axios.post(`${BACKEND_URL}/api/pdf/export`, payload, { responseType: "blob" });
       const blob = new Blob([resp.data], { type: "application/pdf" });
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `${(title || "diagram").replace(/[^\w\s\-]/g, "_").slice(0, 120)}.pdf`;
-      document.body.appendChild(a);
+      a.download = `${payload.title.replace(/[^\w\s\-]/g, "_").slice(0, 120)}.pdf`;
       a.click();
-      a.remove();
       window.URL.revokeObjectURL(url);
     } catch (err) {
-      console.error("exportPdf error", err);
-      alert("PDF export failed. See console.");
+      console.error("exportPdf error:", err);
+      alert("Failed to export PDF. See console.");
     }
-  };
+  }
+
+  // Return values & functions
+  const activeChat = chats.find((c) => c.id === activeChatId) || null;
 
   return {
     chats,
-    activeChatId,
     activeChat,
+    activeChatId,
+    messages,
+    loadingChats,
+    loadingMessages,
     createChat,
     selectChat,
     renameChat,
     deleteChat,
-    updateChat,
     sendMessage,
     exportPdf,
   };

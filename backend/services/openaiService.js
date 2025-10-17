@@ -24,7 +24,7 @@ async function generateArchitectureFromConversation(convoText, options = {}) {
 You are an assistant that reads a conversation and outputs a JSON object (and only the JSON, no extra text) describing an architecture design.
 The JSON must contain these fields:
 - "title": a short descriptive title (string).
-- "problem": a concise, clear problem statement (string).
+- "problem": a concise, clear problem statement (string) - 150 to 250 words (only paragraphs and bullet points).
 - "tech_stack": an array of probable technologies and components to implement this (array of strings).
 - "mermaid": a mermaid diagram code string (use mermaid flowchart/graph or sequence as appropriate).
 

@@ -7,12 +7,12 @@ export default function SvgModal({ svg, onClose }) {
       style={{
         position: "fixed",
         inset: 0,
-        background: "rgba(0,0,0,0.6)",
+        background: "rgba(0,0,0,0.8)",
         display: "flex",
         justifyContent: "center",
         alignItems: "center",
         zIndex: 1200,
-        padding: 20,
+        padding: 10,
       }}
       onClick={onClose}
     >
@@ -22,10 +22,13 @@ export default function SvgModal({ svg, onClose }) {
           color: "#000",
           padding: 12,
           borderRadius: 8,
-          maxWidth: "95%",
-          maxHeight: "95%",
+          width: "98%",
+          height: "98%",
           overflow: "auto",
           position: "relative",
+          display: "flex",
+          justifyContent: "center",
+          alignItems: "center",
         }}
         onClick={(e) => e.stopPropagation()}
       >
@@ -34,18 +37,29 @@ export default function SvgModal({ svg, onClose }) {
           aria-label="Close"
           style={{
             position: "absolute",
-            right: 8,
-            top: 8,
+            right: 12,
+            top: 12,
             background: "transparent",
             border: "none",
-            fontSize: 18,
+            fontSize: 24,
+            fontWeight: "bold",
             cursor: "pointer",
+            zIndex: 10,
           }}
         >
           ✕
         </button>
 
-        <div dangerouslySetInnerHTML={{ __html: svg }} />
+        <div
+          style={{
+            width: "100%",
+            height: "100%",
+            display: "flex",
+            justifyContent: "center",
+            alignItems: "center",
+          }}
+          dangerouslySetInnerHTML={{ __html: svg }}
+        />
       </div>
     </div>
   );
