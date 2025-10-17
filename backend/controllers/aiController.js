@@ -1,15 +1,24 @@
-const openaiService = require('../services/openaiService');
+const openaiService = require("../services/openaiService");
 
+/**
+ * POST /api/ai/generate-mermaid
+ * Body: {
+ *   conversation: string   // concatenated conversation + previous diagrams (if any)
+ *   options?: {}
+ * }
+ *
+ * Response: { title, problem, tech_stack, mermaid }
+ */
 async function generateMermaid(req, res, next) {
   try {
-    const { problem, options } = req.body;
-    if (!problem || typeof problem !== 'string') {
-      return res.status(400).json({ error: 'Missing required field: problem (string)' });
+    const { conversation, options } = req.body;
+
+    if (!conversation || typeof conversation !== "string") {
+      return res.status(400).json({ error: "Missing required field: conversation (string)" });
     }
 
-    // options may contain hints like preferred diagram type (flowchart, sequence, system)
-    const mermaid = await openaiService.generateMermaidFromProblem(problem, options || {});
-    return res.json({ mermaid });
+    const result = await openaiService.generateArchitectureFromConversation(conversation, options || {});
+    return res.json(result);
   } catch (err) {
     next(err);
   }

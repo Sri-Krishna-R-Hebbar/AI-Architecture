@@ -1,76 +1,122 @@
-const OpenAI = require('openai');
+const OpenAI = require("openai");
 
 if (!process.env.OPENAI_API_KEY) {
-  console.warn('OPENAI_API_KEY not set. Set it in .env');
+  console.warn("OPENAI_API_KEY not set. Set it in .env");
 }
 
 const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
 /**
- * generateMermaidFromProblem
- * - problem: user-provided problem statement
- * - options: { diagramType } optional hint to the model
+ * generateArchitectureFromConversation
+ * - convoText: string (concatenated conversation + previous mermaid code if present)
+ * - options: { diagramType?: string }
  *
- * Returns a mermaid diagram string (no surrounding quotes). If the response contains code fences,
- * this function strips them out and returns the raw mermaid script.
+ * Returns an object: { title, problem, tech_stack, mermaid }
  */
-async function generateMermaidFromProblem(problem, options = {}) {
-  const diagramHint = options.diagramType ? `Prefer a ${options.diagramType} mermaid diagram.` : 'Prefer a concise flowchart-style mermaid diagram.';
+async function generateArchitectureFromConversation(convoText, options = {}) {
+  const diagramHint = options.diagramType
+    ? `Prefer a ${options.diagramType} mermaid diagram.`
+    : "Prefer a concise flowchart-style mermaid diagram appropriate for architecture diagrams.";
 
-  // System prompt to ensure model returns only mermaid code
   const systemPrompt = `
-You are an assistant that translates an architecture problem statement into mermaid.js diagram code.
-Output EXACTLY the mermaid script (no explanation, no markdown, no extra text).
-If you must include multi-line code, output it starting with "%%MERMAID_START%%" on its own line and ending with "%%MERMAID_END%%".
-Use mermaid flowchart or graph LR/TD syntax suitable for architecture diagrams. ${diagramHint}
+You are an assistant that reads a conversation and outputs a JSON object (and only the JSON, no extra text) describing an architecture design.
+The JSON must contain these fields:
+- "title": a short descriptive title (string).
+- "problem": a concise, clear problem statement (string).
+- "tech_stack": an array of probable technologies and components to implement this (array of strings).
+- "mermaid": a mermaid diagram code string (use mermaid flowchart/graph or sequence as appropriate).
+
+Important:
+- Return EXACTLY a JSON object, and nothing else (no markdown, no explanations).
+- If you must wrap output, use the markers %%JSON_START%% and %%JSON_END%% around the JSON only.
+- Use the mermaid code in the "mermaid" field (no surrounding triple backticks).
+${diagramHint}
 `;
 
-  // Compose user prompt — instruct to include labels and components
   const userPrompt = `
-Problem statement:
-"""${problem}"""
-
-Requirements:
-- Provide mermaid code only (or use the %%MERMAID_START%% / %%MERMAID_END%% wrapper).
-- Make components named and include arrows for flow and data stores where applicable.
-- Keep the diagram readable; avoid extremely long single lines.
-- If the problem references user actions, services, databases, or third-party APIs, include them as nodes.
-Return only the mermaid script.
+Conversation / Context (use this to create the architecture, update the previous diagram, and produce required fields):
+"""${convoText}"""
+  
+Instructions:
+- Produce a JSON object with keys: title, problem, tech_stack, mermaid.
+- Keep "title" succinct (<= 80 chars).
+- "tech_stack" should be an array containing 4-8 likely techs (e.g. "Node.js", "React", "Postgres", "Redis", "OpenAI", "Docker", "Nginx").
+- "mermaid" must be valid mermaid source (flowchart/graph LR/TD or sequence) that diagrams the architecture described.
 `;
 
-  // Use the Chat Completions or Responses endpoint depending on SDK; here we use chat completions
+  // Use chat completions (structured)
   const messages = [
-    { role: 'system', content: systemPrompt },
-    { role: 'user', content: userPrompt }
+    { role: "system", content: systemPrompt },
+    { role: "user", content: userPrompt },
   ];
 
-  // Call OpenAI chat completions
+  // call model
   const completion = await client.chat.completions.create({
-    model: 'gpt-4o-mini', // choose appropriate model; you can change as needed
+    model: "gpt-4o-mini", // change model if you prefer
     messages,
-    temperature: 0.2,
-    max_tokens: 1200
+    temperature: 0.15,
+    max_tokens: 1200,
   });
 
-  // The new SDK returns structured object; extract text
-  let text = '';
+  let text = "";
   if (completion && completion.choices && completion.choices.length > 0) {
-    text = completion.choices[0].message?.content ?? completion.choices[0].delta?.content ?? '';
+    text =
+      completion.choices[0].message?.content ??
+      completion.choices[0].delta?.content ??
+      "";
   }
 
-  // If model wrapped content, extract between markers
-  const startMarker = '%%MERMAID_START%%';
-  const endMarker = '%%MERMAID_END%%';
+  // If wrapped with markers, extract JSON between them
+  const startMarker = "%%JSON_START%%";
+  const endMarker = "%%JSON_END%%";
   if (text.includes(startMarker) && text.includes(endMarker)) {
     text = text.split(startMarker)[1].split(endMarker)[0].trim();
   }
 
-  // Remove triple-backtick fences if present
-  text = text.replace(/```mermaid\s*/i, '').replace(/```/g, '').trim();
+  // Try to find the first JSON object in the response using regex
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    // fallback: try to clean common wrapping like ```json ... ```
+    text = text.replace(/```json\s*/i, "").replace(/```/g, "").trim();
+    const fallbackMatch = text.match(/\{[\s\S]*\}/);
+    if (!fallbackMatch) {
+      throw new Error("OpenAI response did not contain JSON output.");
+    } else {
+      text = fallbackMatch[0];
+    }
+  } else {
+    text = jsonMatch[0];
+  }
 
-  return text;
+  // parse JSON safely
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    // Try to make minor fixes (trailing commas -> remove)
+    try {
+      const cleaned = text.replace(/,\s*}/g, "}").replace(/,\s*]/g, "]");
+      parsed = JSON.parse(cleaned);
+    } catch (err2) {
+      throw new Error("Failed to parse JSON from OpenAI response: " + err2.message);
+    }
+  }
+
+  // Basic validation & normalization
+  const result = {
+    title: parsed.title ? String(parsed.title).trim() : "Architecture Diagram",
+    problem: parsed.problem ? String(parsed.problem).trim() : convoText.slice(0, 600),
+    tech_stack: Array.isArray(parsed.tech_stack)
+      ? parsed.tech_stack.map((t) => String(t).trim())
+      : typeof parsed.tech_stack === "string"
+      ? parsed.tech_stack.split(",").map((t) => t.trim())
+      : [],
+    mermaid: parsed.mermaid ? String(parsed.mermaid).trim() : "",
+  };
+
+  return result;
 }
 
-module.exports = { generateMermaidFromProblem };
+module.exports = { generateArchitectureFromConversation };
